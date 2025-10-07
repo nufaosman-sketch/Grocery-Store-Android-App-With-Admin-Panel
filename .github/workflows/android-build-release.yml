@@ -1,16 +1,79 @@
-- name: Fix old Gradle syntax + migrate test deps
+name: Android Build Release (APK)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      # Buang wrapper lama (root) yg tarik Gradle 3.3
+      - name: Remove old root Gradle wrapper
+        run: rm -rf gradle gradlew gradlew.bat || true
+
+      # Paksa wrapper Gradle 7.6 dalam subfolder projek Android
+      - name: Set Gradle 7.6 wrapper (app project)
+        working-directory: GroceryMobileApp
+        run: |
+          mkdir -p gradle/wrapper
+          cat > gradle/wrapper/gradle-wrapper.properties <<'PROPS'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-7.6-all.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          PROPS
+          chmod +x ./gradlew || true
+
+      # Pastikan AGP moden & repos betul
+      - name: Ensure AGP 7.4.2 + repos
+        working-directory: GroceryMobileApp
+        run: |
+          cat > build.gradle <<'GRADLE'
+          buildscript {
+            repositories { google(); mavenCentral() }
+            dependencies {
+              classpath 'com.android.tools.build:gradle:7.4.2'
+              classpath 'com.google.gms:google-services:4.3.15'
+            }
+          }
+          allprojects { repositories { google(); mavenCentral() } }
+          task clean(type: Delete) { delete rootProject.buildDir }
+          GRADLE
+
+      # Tukar sintaks gradle lama (compile/testCompile/androidTestCompile) & migrate test deps ke AndroidX
+      - name: Fix old Gradle syntax + migrate test deps
         working-directory: GroceryMobileApp/app
         run: |
-          # Tukar semua varian compile lama → API baru (tangkap yang ada/tiada ruang & ada/tiada bracket)
-          sed -E -i 's/[[:<:]]compile[[:>:]]/implementation/g' build.gradle
-          sed -E -i 's/[[:<:]]testCompile[[:>:]]/testImplementation/g' build.gradle
-          sed -E -i 's/[[:<:]]androidTestCompile[[:>:]]/androidTestImplementation/g' build.gradle
+          set -e
+          # compile family -> implementation family
+          sed -E -i 's/[[:<:]]compile[[:>:]]/implementation/g' build.gradle || true
+          sed -E -i 's/[[:<:]]testCompile[[:>:]]/testImplementation/g' build.gradle || true
+          sed -E -i 's/[[:<:]]androidTestCompile[[:>:]]/androidTestImplementation/g' build.gradle || true
+          # migrate Support test libs -> AndroidX
+          sed -E -i "s#com\.android\.support\.test:runner:[^\"']+#androidx.test:runner:1.5.2#g" build.gradle || true
+          sed -E -i "s#com\.android\.support\.test:rules:[^\"']+#androidx.test:rules:1.5.0#g" build.gradle || true
+          sed -E -i "s#com\.android\.support\.test\.espresso:espresso-core:[^\"']+#androidx.test.espresso:espresso-core:3.5.1#g" build.gradle || true
+          # SDK levels moden
+          sed -E -i 's/compileSdkVersion *[0-9]+/compileSdkVersion 34/g' build.gradle || true
+          sed -E -i 's/targetSdkVersion *[0-9]+/targetSdkVersion 34/g' build.gradle || true
 
-          # Migrasi dependency test lama (Support) → AndroidX
-          sed -E -i "s#com\.android\.support\.test:runner:[^\"']+#androidx.test:runner:1.5.2#g" build.gradle
-          sed -E -i "s#com\.android\.support\.test:rules:[^\"']+#androidx.test:rules:1.5.0#g" build.gradle
-          sed -E -i "s#com\.android\.support\.test\.espresso:espresso-core:[^\"']+#androidx.test.espresso:espresso-core:3.5.1#g" build.gradle
+      - name: Build release APK
+        working-directory: GroceryMobileApp
+        run: ./gradlew --no-daemon :app:assembleRelease
 
-          # Pastikan compile/target SDK moden
-          sed -E -i 's/compileSdkVersion *[0-9]+/compileSdkVersion 34/g' build.gradle
-          sed -E -i 's/targetSdkVersion *[0-9]+/targetSdkVersion 34/g' build.gradle
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: GroceryMobileApp/app/build/outputs/apk/release/*.apk
