@@ -1,4 +1,4 @@
-name: Android AutoFix (patch & build)
+name: Android AutoFix (Build APK)
 
 on:
   workflow_dispatch:
@@ -7,19 +7,12 @@ permissions:
   contents: write
 
 jobs:
-  autofix_build:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set Git user
-        run: |
-          git config user.name  "${{ github.actor }}"
-          git config user.email "${{ github.actor }}@users.noreply.github.com"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -28,169 +21,32 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Use Android project dir
+      - name: Set Android dir
         id: cfg
         run: echo "dir=GroceryMobileApp" >> "$GITHUB_OUTPUT"
 
-      # ---------- Patch project-level files ----------
-      - name: Patch project build.gradle (AGP 7.4.2, repos)
-        working-directory: ${{ steps.cfg.outputs.dir }}
-        run: |
-          cat > build.gradle <<'GRADLE'
-          buildscript {
-            repositories { google(); mavenCentral() }
-            dependencies {
-              classpath 'com.android.tools.build:gradle:7.4.2'
-              classpath 'com.google.gms:google-services:4.3.15'
-            }
-          }
-          allprojects { repositories { google(); mavenCentral() } }
-          task clean(type: Delete) { delete rootProject.buildDir }
-          GRADLE
-
-      - name: Patch settings.gradle
-        working-directory: ${{ steps.cfg.outputs.dir }}
-        run: |
-          cat > settings.gradle <<'SET'
-          rootProject.name = "GroceryMobileApp"
-          include ':app'
-          SET
-
-      - name: Ensure gradle.properties (AndroidX + JVM)
-        working-directory: ${{ steps.cfg.outputs.dir }}
-        run: |
-          touch gradle.properties
-          grep -q 'android.useAndroidX' gradle.properties || echo 'android.useAndroidX=true' >> gradle.properties
-          grep -q 'android.enableJetifier' gradle.properties || echo 'android.enableJetifier=true' >> gradle.properties
-          grep -q 'org.gradle.jvmargs' gradle.properties || echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8' >> gradle.properties
-
-      # ---------- Patch module app ----------
-      - name: Patch app/build.gradle (SDK 34 + AndroidX + FCM)
-        working-directory: ${{ steps.cfg.outputs.dir }}
-        run: |
-          [ -f app/build.gradle ] || { echo "❌ app/build.gradle tiada"; exit 1; }
-          APPID=$(grep -E 'applicationId\s+"[^"]+"' -m1 app/build.gradle | sed -E 's/.*applicationId\s+"([^"]+)".*/\1/')
-          [ -n "$APPID" ] || APPID=$(grep -E 'package\s*=\s*"' -m1 app/src/main/AndroidManifest.xml | sed -E 's/.*package\s*=\s*"([^"]+)".*/\1/')
-          [ -n "$APPID" ] || APPID="codecanyon.grocery"
-
-          cat > app/build.gradle <<GRADLE
-          apply plugin: 'com.android.application'
-          apply plugin: 'com.google.gms.google-services'
-
-          android {
-            namespace "${APPID}"
-            compileSdkVersion 34
-            defaultConfig {
-              applicationId "${APPID}"
-              minSdkVersion 21
-              targetSdkVersion 34
-              versionCode 2
-              versionName "1.0.1"
-              testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-            }
-            buildTypes {
-              debug { minifyEnabled false }
-              release {
-                minifyEnabled true
-                shrinkResources true
-                proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-              }
-            }
-            compileOptions {
-              sourceCompatibility JavaVersion.VERSION_11
-              targetCompatibility JavaVersion.VERSION_11
-            }
-          }
-
-          dependencies {
-            implementation 'androidx.appcompat:appcompat:1.7.0'
-            implementation 'com.google.android.material:material:1.12.0'
-            implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
-            implementation 'androidx.recyclerview:recyclerview:1.3.2'
-            implementation 'androidx.cardview:cardview:1.0.0'
-            implementation 'androidx.legacy:legacy-support-v4:1.0.0'
-            implementation platform('com.google.firebase:firebase-bom:33.3.0')
-            implementation 'com.google.firebase:firebase-messaging'
-            testImplementation 'junit:junit:4.13.2'
-            androidTestImplementation 'androidx.test.ext:junit:1.2.1'
-            androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
-          }
-          GRADLE
-
-      - name: Update AndroidManifest (modern FCM service)
+      - name: Patch namespace + exported
         working-directory: ${{ steps.cfg.outputs.dir }}
         run: |
           MF="app/src/main/AndroidManifest.xml"
-          if [ -f "$MF" ]; then
-            sed -i -E '/<service[^>]*FirebaseInstanceIDService/,/<\/service>/d' "$MF" || true
-            if ! grep -q 'com.google.firebase.MESSAGING_EVENT' "$MF"; then
-              awk '
-                /<\/application>/ && !x {
-                  print "        <service android:name=\\\".fcm.MyFirebaseMessagingService\\\" android:exported=\\\"false\\\">"
-                  print "            <intent-filter><action android:name=\\\"com.google.firebase.MESSAGING_EVENT\\\" /></intent-filter>"
-                  print "        </service>"
-                  x=1
-                } { print }
-              ' "$MF" > "$MF.tmp" && mv "$MF.tmp" "$MF"
-            fi
+          # Tambah namespace kalau tak ada
+          if ! grep -q "namespace" app/build.gradle; then
+            sed -i "/android {/a \    namespace \"codecanyon.grocery\"" app/build.gradle
           fi
+          # Tambah exported ke activity & service
+          sed -i -E '/<activity /{s|<activity |<activity android:exported="true" |g}' "$MF"
+          sed -i -E '/<service /{s|<service |<service android:exported="false" |g}' "$MF"
 
-      - name: Add MyFirebaseMessagingService.java (if missing)
-        working-directory: ${{ steps.cfg.outputs.dir }}
-        run: |
-          PKG=$(grep -E 'package\s*=\s*"' -m1 app/src/main/AndroidManifest.xml | sed -E 's/.*package\s*=\s*"([^"]+)".*/\1/')
-          [ -n "$PKG" ] || PKG=$(grep -E 'applicationId\s+"[^"]+"' -m1 app/build.gradle | sed -E 's/.*applicationId\s+"([^"]+)".*/\1/')
-          [ -n "$PKG" ] || PKG="codecanyon.grocery"
-          DIR="app/src/main/java/$(echo $PKG | tr . /)/fcm"
-          mkdir -p "$DIR"
-          FILE="$DIR/MyFirebaseMessagingService.java"
-          if [ ! -f "$FILE" ]; then
-            cat > "$FILE" <<JAVA
-          package ${PKG}.fcm;
-          import android.util.Log;
-          import com.google.firebase.messaging.FirebaseMessagingService;
-          import com.google.firebase.messaging.RemoteMessage;
-          public class MyFirebaseMessagingService extends FirebaseMessagingService {
-            private static final String TAG = "FCM";
-            @Override public void onNewToken(String token){ super.onNewToken(token); Log.d(TAG,"New token: "+token); }
-            @Override public void onMessageReceived(RemoteMessage m){ super.onMessageReceived(m); Log.d(TAG,"From: "+m.getFrom()); if(m.getNotification()!=null){ Log.d(TAG,"Notification: "+m.getNotification().getBody()); } }
-          }
-          JAVA
-          fi
-
-      - name: Ensure Gradle Wrapper 7.6
-        working-directory: ${{ steps.cfg.outputs.dir }}
-        run: |
-          mkdir -p gradle/wrapper
-          cat > gradle/wrapper/gradle-wrapper.properties <<PROPS
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-7.6-all.zip
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          PROPS
-
-      - name: Commit changes locally
-        run: |
-          git add -A
-          git commit -m "autofix: upgrade AGP 7.4.2, Gradle 7.6, SDK 34, AndroidX, FCM" || echo "No changes to commit"
-
-      # ---------- Build ----------
       - name: Grant execute for gradlew
         working-directory: ${{ steps.cfg.outputs.dir }}
         run: chmod +x ./gradlew || true
 
-      - name: Assemble Release
+      - name: Build release APK
         working-directory: ${{ steps.cfg.outputs.dir }}
-        run: ./gradlew --no-daemon clean :app:assembleRelease
+        run: ./gradlew --no-daemon :app:assembleRelease
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-release
           path: ${{ steps.cfg.outputs.dir }}/app/build/outputs/apk/release/*.apk
-
-      - name: Push commit to current branch
-        run: |
-          CUR_BRANCH="${GITHUB_REF_NAME}"
-          git push origin HEAD:"$CUR_BRANCH" || true
