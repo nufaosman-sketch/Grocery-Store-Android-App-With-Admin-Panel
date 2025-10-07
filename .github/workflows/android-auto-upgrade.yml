@@ -1,0 +1,201 @@
+name: Android Auto Upgrade (SDK 34, AGP 7.4.2)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Find Android project dir
+        id: finddir
+        run: |
+          if [ -f "settings.gradle" ] || { [ -f "build.gradle" ] && [ -d "app" ]; }; then
+            echo "dir=." >> $GITHUB_OUTPUT
+          elif [ -d "GroceryMobileApp" ] && [ -f "GroceryMobileApp/build.gradle" ]; then
+            echo "dir=GroceryMobileApp" >> $GITHUB_OUTPUT
+          else
+            D=$(dirname "$(git ls-files | grep -E '^.+/app/build\.gradle$' | head -n1)")
+            if [ -n "$D" ]; then
+              echo "dir=$D" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Tak jumpa folder Android (ada app/build.gradle?)." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Create working branch
+        run: |
+          BR="auto/upgrade-android-$(date +%Y%m%d-%H%M%S)"
+          git switch -c "$BR"
+          echo "BRANCH=$BR" >> $GITHUB_ENV
+
+      - name: Patch project-level build.gradle
+        working-directory: ${{ steps.finddir.outputs.dir }}
+        run: |
+          cat > build.gradle <<'GRADLE'
+          // Top-level build file
+          buildscript {
+              repositories { google(); mavenCentral() }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:7.4.2'
+                  classpath 'com.google.gms:google-services:4.3.15'
+              }
+          }
+          allprojects { repositories { google(); mavenCentral() } }
+          task clean(type: Delete) { delete rootProject.buildDir }
+          GRADLE
+
+      - name: Patch settings.gradle
+        working-directory: ${{ steps.finddir.outputs.dir }}
+        run: |
+          cat > settings.gradle <<'SET'
+          rootProject.name = "GroceryMobileApp"
+          include ':app'
+          SET
+
+      - name: Ensure gradle.properties (AndroidX + JVM)
+        working-directory: ${{ steps.finddir.outputs.dir }}
+        run: |
+          touch gradle.properties
+          grep -q 'android.useAndroidX' gradle.properties || echo 'android.useAndroidX=true' >> gradle.properties
+          grep -q 'android.enableJetifier' gradle.properties || echo 'android.enableJetifier=true' >> gradle.properties
+          grep -q 'org.gradle.jvmargs' gradle.properties || echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8' >> gradle.properties
+
+      - name: Patch app/build.gradle (AGP7, SDK34, AndroidX, FCM)
+        working-directory: ${{ steps.finddir.outputs.dir }}
+        run: |
+          [ -f app/build.gradle ] || { echo "❌ app/build.gradle tak wujud"; exit 1; }
+          APPID=$(grep -E 'applicationId\s+"[^"]+"' -m1 app/build.gradle | sed -E 's/.*applicationId\s+"([^"]+)".*/\1/')
+          [ -n "$APPID" ] || APPID="codecanyon.grocery"
+          cat > app/build.gradle <<GRADLE
+          apply plugin: 'com.android.application'
+          apply plugin: 'com.google.gms.google-services'
+
+          android {
+              namespace "${APPID}"
+              compileSdkVersion 34
+              defaultConfig {
+                  applicationId "${APPID}"
+                  minSdkVersion 21
+                  targetSdkVersion 34
+                  versionCode 2
+                  versionName "1.0.1"
+                  testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+              }
+              buildTypes {
+                  debug { minifyEnabled false }
+                  release {
+                      minifyEnabled true
+                      shrinkResources true
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_11
+                  targetCompatibility JavaVersion.VERSION_11
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.7.0'
+              implementation 'com.google.android.material:material:1.12.0'
+              implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
+              implementation 'androidx.recyclerview:recyclerview:1.3.2'
+              implementation 'androidx.cardview:cardview:1.0.0'
+              implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+              implementation platform('com.google.firebase:firebase-bom:33.3.0')
+              implementation 'com.google.firebase:firebase-messaging'
+              testImplementation 'junit:junit:4.13.2'
+              androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+              androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
+          }
+          GRADLE
+
+      - name: Patch AndroidManifest (modern FCM service)
+        working-directory: ${{ steps.finddir.outputs.dir }}
+        run: |
+          MF="app/src/main/AndroidManifest.xml"
+          if [ -f "$MF" ]; then
+            sed -i -E '/<service[^>]*FirebaseInstanceIDService/,/<\/service>/d' "$MF" || true
+            if ! grep -q 'com.google.firebase.MESSAGING_EVENT' "$MF"; then
+              awk '
+                /<\/application>/ && !x {
+                  print "        <service android:name=\\\".fcm.MyFirebaseMessagingService\\\" android:exported=\\\"false\\\">"
+                  print "            <intent-filter>"
+                  print "                <action android:name=\\\"com.google.firebase.MESSAGING_EVENT\\\" />"
+                  print "            </intent-filter>"
+                  print "        </service>"
+                  x=1
+                }
+                { print }
+              ' "$MF" > "$MF.tmp" && mv "$MF.tmp" "$MF"
+            fi
+          fi
+
+      - name: Add MyFirebaseMessagingService.java (if missing)
+        working-directory: ${{ steps.finddir.outputs.dir }}
+        run: |
+          PKG=$(grep -E 'package\s*=\s*"' -m1 app/src/main/AndroidManifest.xml | sed -E 's/.*package\s*=\s*"([^"]+)".*/\1/')
+          [ -n "$PKG" ] || PKG=$(grep -E 'applicationId\s+"[^"]+"' -m1 app/build.gradle | sed -E 's/.*applicationId\s+"([^"]+)".*/\1/')
+          [ -n "$PKG" ] || PKG="codecanyon.grocery"
+          DIR="app/src/main/java/$(echo $PKG | tr . /)/fcm"
+          mkdir -p "$DIR"
+          FILE="$DIR/MyFirebaseMessagingService.java"
+          if [ ! -f "$FILE" ]; then
+            cat > "$FILE" <<JAVA
+          package ${PKG}.fcm;
+          import android.util.Log;
+          import com.google.firebase.messaging.FirebaseMessagingService;
+          import com.google.firebase.messaging.RemoteMessage;
+          public class MyFirebaseMessagingService extends FirebaseMessagingService {
+              private static final String TAG = "FCM";
+              @Override public void onNewToken(String token){ super.onNewToken(token); Log.d(TAG,"New token: "+token); }
+              @Override public void onMessageReceived(RemoteMessage m){ super.onMessageReceived(m); Log.d(TAG,"From: "+m.getFrom()); if(m.getNotification()!=null){ Log.d(TAG,"Notification: "+m.getNotification().getBody()); } }
+          }
+          JAVA
+          fi
+
+      - name: Prepare Gradle Wrapper 7.6
+        working-directory: ${{ steps.finddir.outputs.dir }}
+        run: |
+          mkdir -p gradle/wrapper
+          cat > gradle/wrapper/gradle-wrapper.properties <<PROPS
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-7.6-all.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          PROPS
+
+      - name: Commit changes
+        run: |
+          git add -A
+          git commit -m "auto: upgrade to AGP 7.4.2, Gradle 7.6, SDK 34, AndroidX, Firebase BOM" || echo "No changes to commit"
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: ${{ env.BRANCH }}
+          title: "Auto-upgrade Android (SDK 34, AGP 7.4.2, AndroidX, FCM)"
+          body: |
+            • Repos: jcenter() -> google(), mavenCentral()
+            • AGP 7.4.2 + Gradle 7.6
+            • AndroidX flags, compile/target SDK 34
+            • Firebase Messaging via BOM
+            • Modern FCM service added
+          labels: [automation, upgrade]
