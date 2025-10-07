@@ -1,21 +1,69 @@
-- name: Force AGP 7.4.2 + remove jcenter
+name: Android Build Release (APK)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      # ===== MATIKAN WRAPPER ROOT (3.3) =====
+      - name: Remove old root Gradle wrapper (3.3)
+        run: rm -rf gradle gradlew gradlew.bat || true
+
+      # ===== WRAPPER 7.6 DALAM GroceryMobileApp =====
+      - name: Force Gradle 7.6 (app project)
         working-directory: GroceryMobileApp
         run: |
-          # Tukar apa-apa 'com.android.tools.build:gradle:*' → 7.4.2 di semua build.gradle
-          grep -Rl "com.android.tools.build:gradle:" . | xargs -r sed -i -E "s#com\.android\.tools\.build:gradle:[0-9.]+#com.android.tools.build:gradle:7.4.2#g"
+          mkdir -p gradle/wrapper
+          cat > gradle/wrapper/gradle-wrapper.properties <<'PROPS'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-7.6-all.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          PROPS
+          chmod +x ./gradlew || true
 
-          # Tukar jcenter() → mavenCentral() di semua gradle file
-          grep -Rl "jcenter\\(\\)" . | xargs -r sed -i "s/jcenter()/mavenCentral()/g"
-
-          # Pastikan project-level build.gradle betul (overwrite untuk selamat)
+      # ===== AGP 7.4.2 & REPOS GOOGLE/MAVENCENTRAL =====
+      - name: Ensure AGP 7.4.2 + repos
+        working-directory: GroceryMobileApp
+        run: |
           cat > build.gradle <<'GRADLE'
           buildscript {
             repositories { google(); mavenCentral() }
-            dependencies {
-              classpath 'com.android.tools.build:gradle:7.4.2'
-              classpath 'com.google.gms:google-services:4.3.15'
-            }
+            dependencies { classpath 'com.android.tools.build:gradle:7.4.2' }
           }
           allprojects { repositories { google(); mavenCentral() } }
           task clean(type: Delete) { delete rootProject.buildDir }
           GRADLE
+
+      # ===== TUKAR compile -> implementation (projek lama) =====
+      - name: Fix deprecated Gradle configs
+        working-directory: GroceryMobileApp/app
+        run: |
+          sed -i 's/compile /implementation /g' build.gradle || true
+          sed -i 's/testCompile /testImplementation /g' build.gradle || true
+          sed -i 's/androidTestCompile /androidTestImplementation /g' build.gradle || true
+          sed -i 's/jcenter()/mavenCentral()/g' ../build.gradle || true
+
+      # ===== BUILD GUNA WRAPPER SUBPROJECT =====
+      - name: Build release APK
+        working-directory: GroceryMobileApp
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: GroceryMobileApp/app/build/outputs/apk/release/*.apk
