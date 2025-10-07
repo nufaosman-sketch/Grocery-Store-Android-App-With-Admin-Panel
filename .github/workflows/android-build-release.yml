@@ -6,7 +6,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,11 +17,12 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Ensure Gradle Wrapper 7.6 (properties only)
+      # ====== PAKSA WRAPPER KE GRADLE 7.6 ======
+      - name: Force Gradle 7.6 wrapper
         working-directory: GroceryMobileApp
         run: |
           mkdir -p gradle/wrapper
-          cat > gradle/wrapper/gradle-wrapper.properties <<PROPS
+          cat > gradle/wrapper/gradle-wrapper.properties <<'PROPS'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
           distributionUrl=https\://services.gradle.org/distributions/gradle-7.6-all.zip
@@ -30,13 +30,39 @@ jobs:
           zipStorePath=wrapper/dists
           PROPS
 
-      - name: Grant execute for gradlew
+      # ====== PASTIKAN PLUGIN AGP BUKAN 3.x (upgrade ke 7.4.2) ======
+      - name: Ensure AGP 7.4.2 (project build.gradle)
+        working-directory: GroceryMobileApp
+        run: |
+          cat > build.gradle <<'GRADLE'
+          buildscript {
+            repositories { google(); mavenCentral() }
+            dependencies {
+              classpath 'com.android.tools.build:gradle:7.4.2'
+              classpath 'com.google.gms:google-services:4.3.15'
+            }
+          }
+          allprojects { repositories { google(); mavenCentral() } }
+          task clean(type: Delete) { delete rootProject.buildDir }
+          GRADLE
+
+      - name: Ensure settings.gradle & gradle.properties
+        working-directory: GroceryMobileApp
+        run: |
+          echo 'rootProject.name = "GroceryMobileApp"
+          include ":app"' > settings.gradle
+          touch gradle.properties
+          grep -q 'android.useAndroidX' gradle.properties || echo 'android.useAndroidX=true' >> gradle.properties
+          grep -q 'android.enableJetifier' gradle.properties || echo 'android.enableJetifier=true' >> gradle.properties
+          grep -q 'org.gradle.jvmargs' gradle.properties || echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8' >> gradle.properties
+
+      - name: Make gradlew executable
         working-directory: GroceryMobileApp
         run: chmod +x ./gradlew || true
 
-      - name: Assemble Release
+      - name: Build release APK
         working-directory: GroceryMobileApp
-        run: ./gradlew --no-daemon clean :app:assembleRelease
+        run: ./gradlew --no-daemon :app:assembleRelease
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
