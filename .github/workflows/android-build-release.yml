@@ -1,108 +1,30 @@
-name: Android Build Release (APK & AAB, Signed)
+name: Android Build Release (APK)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main, master ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: "temurin"
           java-version: "17"
-          cache: gradle
 
-      - name: Find Android project dir
-        id: finddir
-        run: |
-          if [ -f "settings.gradle" ] || { [ -f "build.gradle" ] && [ -d "app" ]; }; then
-            echo "dir=." >> $GITHUB_OUTPUT
-          elif [ -d "GroceryMobileApp" ] && [ -f "GroceryMobileApp/build.gradle" ]; then
-            echo "dir=GroceryMobileApp" >> $GITHUB_OUTPUT
-          else
-            D=$(dirname "$(git ls-files | grep -E '^.+/app/build\.gradle$' | head -n1)")
-            [ -n "$D" ] && echo "dir=$D" >> $GITHUB_OUTPUT || { echo "❌ Tak jumpa Android project"; exit 1; }
-          fi
+      - name: Grant execute permission for Gradlew
+        run: chmod +x GroceryMobileApp/gradlew
 
-      - name: Restore/prepare Gradle Wrapper 7.6 if needed
-        working-directory: ${{ steps.finddir.outputs.dir }}
-        run: |
-          if [ ! -f gradle/wrapper/gradle-wrapper.properties ]; then
-            mkdir -p gradle/wrapper
-            cat > gradle/wrapper/gradle-wrapper.properties <<PROPS
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-7.6-all.zip
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          PROPS
-          fi
-          echo "Wrapper:"
-          cat gradle/wrapper/gradle-wrapper.properties
+      - name: Build APK
+        working-directory: GroceryMobileApp
+        run: ./gradlew assembleRelease
 
-      - name: Decode keystore
-        run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > $HOME/release-key.jks
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-
-      - name: Create signing config (gradle.properties safe way)
-        working-directory: ${{ steps.finddir.outputs.dir }}
-        run: |
-          cat >> gradle.properties <<'PROPS'
-          RELEASE_STORE_FILE=${HOME}/release-key.jks
-          RELEASE_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          RELEASE_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD=${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
-          PROPS
-
-      - name: Ensure app signing config in app/build.gradle
-        working-directory: ${{ steps.finddir.outputs.dir }}
-        run: |
-          if ! grep -q "signingConfigs" app/build.gradle; then
-            awk '
-              /android\s*{/{print;print "    signingConfigs { release { storeFile file(System.getenv(\\\"HOME\\\") + \\\"/release-key.jks\\\"); storePassword System.getenv(\\\"ANDROID_KEYSTORE_PASSWORD\\\"); keyAlias System.getenv(\\\"ANDROID_KEY_ALIAS\\\"); keyPassword System.getenv(\\\"ANDROID_KEY_ALIAS_PASSWORD\\\"); } }"; next}1
-              ' app/build.gradle > app/build.gradle.tmp && mv app/build.gradle.tmp app/build.gradle
-          fi
-          if ! grep -q "signingConfig signingConfigs.release" app/build.gradle; then
-            sed -i -E 's/(release\s*\{)/\1\n            signingConfig signingConfigs.release/' app/build.gradle
-          fi
-
-      - name: Grant gradlew
-        working-directory: ${{ steps.finddir.outputs.dir }}
-        run: chmod +x ./gradlew
-
-      - name: Build APK & AAB (Release)
-        working-directory: ${{ steps.finddir.outputs.dir }}
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_ALIAS_PASSWORD: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
-        run: |
-          ./gradlew --no-daemon clean :app:assembleRelease :app:bundleRelease
-
-      - name: Collect artifacts
-        working-directory: ${{ steps.finddir.outputs.dir }}
-        run: |
-          mkdir -p artifacts
-          find app/build/outputs/apk/release -name "*.apk" -exec cp {} artifacts/ \;
-          find app/build/outputs/bundle/release -name "*.aab" -exec cp {} artifacts/ \;
-          ls -lah artifacts
-
-      - name: Upload artifacts
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-release
-          path: ${{ steps.finddir.outputs.dir }}/artifacts
-          compression-level: 9
+          path: GroceryMobileApp/app/build/outputs/apk/release/
