@@ -17,7 +17,6 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      # ====== PAKSA WRAPPER KE GRADLE 7.6 ======
       - name: Force Gradle 7.6 wrapper
         working-directory: GroceryMobileApp
         run: |
@@ -30,33 +29,16 @@ jobs:
           zipStorePath=wrapper/dists
           PROPS
 
-      # ====== PASTIKAN PLUGIN AGP BUKAN 3.x (upgrade ke 7.4.2) ======
-      - name: Ensure AGP 7.4.2 (project build.gradle)
-        working-directory: GroceryMobileApp
+      - name: Fix deprecated Gradle 'compile' usage
+        working-directory: GroceryMobileApp/app
         run: |
-          cat > build.gradle <<'GRADLE'
-          buildscript {
-            repositories { google(); mavenCentral() }
-            dependencies {
-              classpath 'com.android.tools.build:gradle:7.4.2'
-              classpath 'com.google.gms:google-services:4.3.15'
-            }
-          }
-          allprojects { repositories { google(); mavenCentral() } }
-          task clean(type: Delete) { delete rootProject.buildDir }
-          GRADLE
+          if grep -q "compile " build.gradle; then
+            sed -i 's/compile /implementation /g' build.gradle
+            sed -i 's/testCompile /testImplementation /g' build.gradle
+            sed -i 's/androidTestCompile /androidTestImplementation /g' build.gradle
+          fi
 
-      - name: Ensure settings.gradle & gradle.properties
-        working-directory: GroceryMobileApp
-        run: |
-          echo 'rootProject.name = "GroceryMobileApp"
-          include ":app"' > settings.gradle
-          touch gradle.properties
-          grep -q 'android.useAndroidX' gradle.properties || echo 'android.useAndroidX=true' >> gradle.properties
-          grep -q 'android.enableJetifier' gradle.properties || echo 'android.enableJetifier=true' >> gradle.properties
-          grep -q 'org.gradle.jvmargs' gradle.properties || echo 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8' >> gradle.properties
-
-      - name: Make gradlew executable
+      - name: Grant execute for gradlew
         working-directory: GroceryMobileApp
         run: chmod +x ./gradlew || true
 
