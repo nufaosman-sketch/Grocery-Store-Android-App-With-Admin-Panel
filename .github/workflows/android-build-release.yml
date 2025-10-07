@@ -17,12 +17,10 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      # ===== MATIKAN WRAPPER ROOT (3.3) =====
-      - name: Remove old root Gradle wrapper (3.3)
+      - name: Remove old Gradle wrapper
         run: rm -rf gradle gradlew gradlew.bat || true
 
-      # ===== WRAPPER 7.6 DALAM GroceryMobileApp =====
-      - name: Force Gradle 7.6 (app project)
+      - name: Set Gradle 7.6 wrapper
         working-directory: GroceryMobileApp
         run: |
           mkdir -p gradle/wrapper
@@ -35,29 +33,31 @@ jobs:
           PROPS
           chmod +x ./gradlew || true
 
-      # ===== AGP 7.4.2 & REPOS GOOGLE/MAVENCENTRAL =====
-      - name: Ensure AGP 7.4.2 + repos
+      - name: Patch AGP + Repos
         working-directory: GroceryMobileApp
         run: |
           cat > build.gradle <<'GRADLE'
           buildscript {
             repositories { google(); mavenCentral() }
-            dependencies { classpath 'com.android.tools.build:gradle:7.4.2' }
+            dependencies {
+              classpath 'com.android.tools.build:gradle:7.4.2'
+              classpath 'com.google.gms:google-services:4.3.15'
+            }
           }
           allprojects { repositories { google(); mavenCentral() } }
           task clean(type: Delete) { delete rootProject.buildDir }
           GRADLE
 
-      # ===== TUKAR compile -> implementation (projek lama) =====
-      - name: Fix deprecated Gradle configs
+      - name: Fix old Gradle syntax
         working-directory: GroceryMobileApp/app
         run: |
           sed -i 's/compile /implementation /g' build.gradle || true
           sed -i 's/testCompile /testImplementation /g' build.gradle || true
           sed -i 's/androidTestCompile /androidTestImplementation /g' build.gradle || true
           sed -i 's/jcenter()/mavenCentral()/g' ../build.gradle || true
+          sed -i 's/compileSdkVersion [0-9]\+/compileSdkVersion 34/' build.gradle || true
+          sed -i 's/targetSdkVersion [0-9]\+/targetSdkVersion 34/' build.gradle || true
 
-      # ===== BUILD GUNA WRAPPER SUBPROJECT =====
       - name: Build release APK
         working-directory: GroceryMobileApp
         run: ./gradlew --no-daemon :app:assembleRelease
