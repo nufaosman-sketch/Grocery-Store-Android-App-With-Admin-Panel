@@ -15,64 +15,93 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
 
-      # Buang wrapper lama (root) yg tarik Gradle 3.3
-      - name: Remove old root Gradle wrapper
+      - name: Remove old wrappers
         run: rm -rf gradle gradlew gradlew.bat || true
 
-      # Paksa wrapper Gradle 7.6 dalam subfolder projek Android
-      - name: Set Gradle 7.6 wrapper (app project)
+      - name: Setup Gradle 7.6 for Android project
         working-directory: GroceryMobileApp
         run: |
           mkdir -p gradle/wrapper
           cat > gradle/wrapper/gradle-wrapper.properties <<'PROPS'
           distributionBase=GRADLE_USER_HOME
           distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-7.6-all.zip
+          distributionUrl=https://services.gradle.org/distributions/gradle-7.6-all.zip
           zipStoreBase=GRADLE_USER_HOME
           zipStorePath=wrapper/dists
           PROPS
           chmod +x ./gradlew || true
 
-      # Pastikan AGP moden & repos betul
-      - name: Ensure AGP 7.4.2 + repos
+      - name: Rewrite app/build.gradle (clean modern config)
+        working-directory: GroceryMobileApp
+        run: |
+          mkdir -p app
+          cat > app/build.gradle <<'GRADLE'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace "codecanyon.grocery"
+              compileSdkVersion 34
+
+              defaultConfig {
+                  applicationId "codecanyon.grocery"
+                  minSdkVersion 21
+                  targetSdkVersion 34
+                  versionCode 2
+                  versionName "1.0.1"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled true
+                      shrinkResources true
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+                  debug {
+                      minifyEnabled false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_11
+                  targetCompatibility JavaVersion.VERSION_11
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.7.0'
+              implementation 'com.google.android.material:material:1.12.0'
+              implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
+              implementation 'androidx.recyclerview:recyclerview:1.3.2'
+              implementation 'androidx.cardview:cardview:1.0.0'
+              implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+              testImplementation 'junit:junit:4.13.2'
+              androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+              androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
+          }
+          GRADLE
+
+      - name: Set project build.gradle
         working-directory: GroceryMobileApp
         run: |
           cat > build.gradle <<'GRADLE'
           buildscript {
-            repositories { google(); mavenCentral() }
-            dependencies {
-              classpath 'com.android.tools.build:gradle:7.4.2'
-              classpath 'com.google.gms:google-services:4.3.15'
-            }
+              repositories { google(); mavenCentral() }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:7.4.2'
+              }
           }
           allprojects { repositories { google(); mavenCentral() } }
           task clean(type: Delete) { delete rootProject.buildDir }
           GRADLE
 
-      # Tukar sintaks gradle lama (compile/testCompile/androidTestCompile) & migrate test deps ke AndroidX
-      - name: Fix old Gradle syntax + migrate test deps
-        working-directory: GroceryMobileApp/app
-        run: |
-          set -e
-          # compile family -> implementation family
-          sed -E -i 's/[[:<:]]compile[[:>:]]/implementation/g' build.gradle || true
-          sed -E -i 's/[[:<:]]testCompile[[:>:]]/testImplementation/g' build.gradle || true
-          sed -E -i 's/[[:<:]]androidTestCompile[[:>:]]/androidTestImplementation/g' build.gradle || true
-          # migrate Support test libs -> AndroidX
-          sed -E -i "s#com\.android\.support\.test:runner:[^\"']+#androidx.test:runner:1.5.2#g" build.gradle || true
-          sed -E -i "s#com\.android\.support\.test:rules:[^\"']+#androidx.test:rules:1.5.0#g" build.gradle || true
-          sed -E -i "s#com\.android\.support\.test\.espresso:espresso-core:[^\"']+#androidx.test.espresso:espresso-core:3.5.1#g" build.gradle || true
-          # SDK levels moden
-          sed -E -i 's/compileSdkVersion *[0-9]+/compileSdkVersion 34/g' build.gradle || true
-          sed -E -i 's/targetSdkVersion *[0-9]+/targetSdkVersion 34/g' build.gradle || true
-
       - name: Build release APK
         working-directory: GroceryMobileApp
         run: ./gradlew --no-daemon :app:assembleRelease
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: android-release
